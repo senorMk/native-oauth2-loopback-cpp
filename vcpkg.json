@@ -1,0 +1,8 @@
+{
+  "name": "oauth2loopback",
+  "version": "0.1.0",
+  "description": "OAuth 2.0 authorization-code flow for native C++ apps via a localhost loopback listener (RFC 8252)",
+  "dependencies": [
+    "cpprestsdk"
+  ]
+}
