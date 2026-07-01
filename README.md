@@ -4,8 +4,6 @@ A small, self-contained pattern for completing the **OAuth 2.0 Authorization Cod
 
 This is the approach recommended by [RFC 8252 — OAuth 2.0 for Native Apps](https://datatracker.ietf.org/doc/html/rfc8252): use the system browser and a loopback redirect URI rather than an embedded user-agent.
 
-Extracted from a commercial Windows backup application, where it powers account linking for Dropbox, Google Drive, and pCloud.
-
 ## How it works
 
 1. `OAuth2Session::open_browser_auth()` builds the provider authorization URL (adding `access_type=offline` / `token_access_type=offline` so a refresh token is issued) and launches the system browser.
@@ -18,7 +16,7 @@ Extracted from a commercial Windows backup application, where it powers account 
 | File | Responsibility |
 |------|----------------|
 | `OAuth2CodeListener.h/.cpp` | Loopback `http_listener` that captures the redirect and drives the token exchange. Signals completion via a task-completion event. |
-| `OAuth2Session.h/.cpp` | Base session: builds the auth URL, opens the browser, waits for the listener, stores the token config. Subclass and implement `BeginLinkProcess()` / `CreateBackupsBaseFolder()` per provider. |
+| `OAuth2Session.h/.cpp` | Base session: builds the auth URL, opens the browser, waits for the listener, stores the token config. Subclass and implement `BeginLinkProcess()` per provider. |
 
 ## Provider quirks handled
 
