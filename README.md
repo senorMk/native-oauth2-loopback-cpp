@@ -1,37 +1,85 @@
-# Native App OAuth 2.0 via Loopback Listener (C++)
+# oauth2loopback — Native App OAuth 2.0 via Loopback Listener (C++)
 
-A small, self-contained pattern for completing the **OAuth 2.0 Authorization Code flow in a desktop application** — no embedded webview, no copy-pasting codes. The app opens the user's real browser for consent, then captures the redirect on a `http://localhost` loopback listener and exchanges it for an access token.
+A small C++ library for completing the **OAuth 2.0 Authorization Code flow in a desktop application** — no embedded webview, no copy-pasting codes. The app opens the user's real browser for consent, then captures the redirect on a `http://localhost` loopback listener and exchanges it for an access token.
 
 This is the approach recommended by [RFC 8252 — OAuth 2.0 for Native Apps](https://datatracker.ietf.org/doc/html/rfc8252): use the system browser and a loopback redirect URI rather than an embedded user-agent.
 
-## How it works
+## Usage
 
-1. `OAuth2Session::open_browser_auth()` builds the provider authorization URL (adding `access_type=offline` / `token_access_type=offline` so a refresh token is issued) and launches the system browser.
-2. The user approves access in the browser.
-3. The provider redirects to the app's loopback URI (`http://localhost:PORT/`). `OAuth2CodeListener` is an `http_listener` bound to that URI; it receives the request, extracts the `code`, and exchanges it for a token.
-4. Completion is signalled through a `pplx::task_completion_event<bool>`, so the caller can await/`.then()` the result cleanly.
+```cpp
+#include "oauth2loopback/authorization_flow.h"
 
-## Files
+oauth2loopback::AuthorizationFlow flow(
+    U("CLIENT_KEY"), U("CLIENT_SECRET"),
+    U("https://www.dropbox.com/oauth2/authorize"),
+    U("https://api.dropboxapi.com/oauth2/token"),
+    U("http://localhost:8889/"),               // registered loopback redirect URI
+    oauth2loopback::providers::dropbox());      // provider quirks preset
 
-| File | Responsibility |
+oauth2loopback::AuthResult result = flow.authorize().get(); // or .then(...)
+flow.stop();
+
+if (result.ok) {
+    web::http::client::http_client_config http_config;
+    http_config.set_oauth2(flow.config());      // token is in flow.config().token()
+}
+```
+
+`authorize()` builds the authorization URL, opens the system browser, and returns a `pplx::task<AuthResult>` that resolves once the loopback listener has captured the redirect and finished the token exchange. On failure, `AuthResult::error` says why.
+
+A runnable version of this lives in [`examples/dropbox_example.cpp`](examples/dropbox_example.cpp).
+
+## Provider quirks as data
+
+Providers deviate from the vanilla flow in small ways. Instead of hardcoding per-provider branches, quirks are described by a `ProviderTraits` value:
+
+| Field | Meaning |
+|-------|---------|
+| `extra_auth_params` | Extra query parameters on the authorization URL (e.g. `access_type=offline` for a Google refresh token) |
+| `generate_state` | Generate/verify the `state` parameter — disable for providers that don't echo it back |
+| `extract_code_manually` | Pull `code` out of the redirect and use `token_from_code()` instead of `token_from_redirected_uri()` |
+| `success_body` / `failure_body` | Page shown in the browser after the redirect |
+
+Presets are included for the providers this was originally battle-tested against:
+
+- `providers::dropbox()` — standard flow, requests a refresh token via `token_access_type=offline`.
+- `providers::google_drive()` — requests `access_type=offline`; extracts the `code` manually because the raw redirect can't be fed straight into `token_from_redirected_uri`.
+- `providers::pcloud()` — does not echo `state` back, so state verification is disabled and the `code` is extracted manually.
+
+Any other provider is a `ProviderTraits` value away — no library changes needed.
+
+## Layout
+
+| Path | Responsibility |
 |------|----------------|
-| `OAuth2CodeListener.h/.cpp` | Loopback `http_listener` that captures the redirect and drives the token exchange. Signals completion via a task-completion event. |
-| `OAuth2Session.h/.cpp` | Base session: builds the auth URL, opens the browser, waits for the listener, stores the token config. Subclass and implement `BeginLinkProcess()` per provider. |
+| `include/oauth2loopback/authorization_flow.h` | `AuthorizationFlow` — builds the auth URL, opens the browser, awaits the result. Also `open_in_default_browser()`. |
+| `include/oauth2loopback/code_listener.h` | `CodeListener` — loopback `http_listener` that captures the redirect and drives the token exchange. |
+| `include/oauth2loopback/provider_traits.h` | `ProviderTraits` and the provider presets. |
+| `examples/` | Runnable end-to-end example. |
 
-## Provider quirks handled
+## Building
 
-- **Google Drive** — parses the `code` out of the query/fragment manually because the raw redirect can be awkward to feed straight into `token_from_redirected_uri`.
-- **pCloud** — does not echo back the `state` parameter, so it's handled via `token_from_code` on the extracted `code`.
-- **Dropbox** — uses the standard `token_from_redirected_uri` path.
+Depends on the [C++ REST SDK (cpprestsdk)](https://github.com/microsoft/cpprestsdk), available via vcpkg (a `vcpkg.json` manifest is included):
 
-## Dependencies
+```sh
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+cmake --build build
+```
 
-- [C++ REST SDK (cpprestsdk / Casablanca)](https://github.com/microsoft/cpprestsdk) — `http_listener`, `http_client`, and the `oauth2` experimental config/token helpers.
-- The original application's own logging/config helpers and wxWidgets (`wxString`, `wxLaunchDefaultBrowser`). Swap in your own logging, config, and "open browser" call to reuse the pattern — the spots that need them are marked with `TODO` comments.
+Or consume the library directly from your own CMake project:
 
-## Status
+```cmake
+add_subdirectory(native-oauth2-loopback-cpp)
+target_link_libraries(your_app PRIVATE oauth2loopback)
+```
 
-A **reference extraction**, published to share the pattern — not a build-out-of-the-box library. The listener and session logic are the reusable parts; the app hooks are left visible so you can see where to plug in your own.
+By default the browser is opened with `ShellExecute` (Windows), `open` (macOS), or `xdg-open` (Linux); override it with `set_browser_launcher()` if your app needs to show a prompt first or launch differently.
+
+## Limitations
+
+- **No PKCE.** RFC 8252 recommends PKCE for native apps, but cpprestsdk's experimental `oauth2_config` does not support it. If your provider requires PKCE you'll need to extend the token exchange.
+- The redirect port is fixed by the `redirect_uri` you register; there's no automatic free-port selection yet.
+- cpprestsdk's OAuth 2.0 support lives in an `experimental` namespace upstream.
 
 ## License
 
